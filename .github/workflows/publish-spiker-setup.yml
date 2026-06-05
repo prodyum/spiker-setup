@@ -1,0 +1,139 @@
+name: Publish Spiker Setup Release
+
+on:
+  repository_dispatch:
+    types:
+      - publish-spiker-setup
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "Private source repository that owns the setup artifact run."
+        required: true
+        default: "hasan-ozdemir/spiker"
+      source_run_id:
+        description: "GitHub Actions run id that uploaded the setup artifact."
+        required: true
+      artifact_name:
+        description: "Artifact name uploaded by the source workflow."
+        required: true
+        default: "spiker-setup"
+      release_tag:
+        description: "Release tag to create or update."
+        required: true
+      release_title:
+        description: "Release title. Defaults to Spiker Setup <tag>."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark release as prerelease."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_REPOSITORY: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repository || github.event.client_payload.source_repository }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.client_payload.source_run_id }}
+      SOURCE_RUN_URL: ${{ github.event_name == 'workflow_dispatch' && format('https://github.com/{0}/actions/runs/{1}', inputs.source_repository, inputs.source_run_id) || github.event.client_payload.source_run_url }}
+      SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && 'manual' || github.event.client_payload.source_ref }}
+      SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && '' || github.event.client_payload.source_sha }}
+      ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || github.event.client_payload.artifact_name }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.client_payload.release_tag }}
+      RELEASE_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_title || github.event.client_payload.release_title }}
+      PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || github.event.client_payload.prerelease }}
+    steps:
+      - name: Validate dispatch metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in SOURCE_REPOSITORY SOURCE_RUN_ID ARTIFACT_NAME RELEASE_TAG; do
+            value="${!name:-}"
+            if [[ -z "$value" ]]; then
+              echo "::error::$name is required."
+              exit 2
+            fi
+          done
+          if [[ "$RELEASE_TAG" =~ [\\/\[\]\^\ \*\`~:\?\<\>\|] ]]; then
+            echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 2
+          fi
+
+      - name: Download setup artifact from private source run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SPIKER_SOURCE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::SPIKER_SOURCE_TOKEN secret is required to download private source artifacts."
+            exit 3
+          fi
+          mkdir -p release-artifact
+          for attempt in {1..20}; do
+            if gh run download "$SOURCE_RUN_ID" \
+              --repo "$SOURCE_REPOSITORY" \
+              --name "$ARTIFACT_NAME" \
+              --dir release-artifact; then
+              exit 0
+            fi
+            echo "Artifact is not available yet; retry $attempt/20."
+            sleep 15
+          done
+          echo "::error::Unable to download artifact '$ARTIFACT_NAME' from $SOURCE_REPOSITORY run $SOURCE_RUN_ID."
+          exit 4
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset="$(find release-artifact -type f -name 'spiker-setup.exe' -print -quit)"
+          if [[ -z "$asset" ]]; then
+            echo "::error::spiker-setup.exe was not found in the downloaded artifact."
+            find release-artifact -maxdepth 4 -type f -print
+            exit 5
+          fi
+
+          sha256="$(sha256sum "$asset" | awk '{print toupper($1)}')"
+          title="$RELEASE_TITLE"
+          if [[ -z "$title" ]]; then
+            title="Spiker Setup $RELEASE_TAG"
+          fi
+
+          notes_file="$(mktemp)"
+          {
+            echo "Spiker setup package."
+            echo "Source run: $SOURCE_RUN_URL"
+            echo "Source repository: $SOURCE_REPOSITORY"
+            echo "Source branch/tag: $SOURCE_REF"
+            echo "Source commit: $SOURCE_SHA"
+            echo "SHA256: $sha256"
+          } > "$notes_file"
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --notes-file "$notes_file"
+            gh release upload "$RELEASE_TAG" "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            args=(
+              release create "$RELEASE_TAG" "$asset"
+              --repo "$GITHUB_REPOSITORY"
+              --title "$title"
+              --notes-file "$notes_file"
+            )
+            if [[ "$PRERELEASE" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi
