@@ -50,6 +50,7 @@ $releaseApiUrl = "https://api.github.com/repos/$repository/releases/latest"
 $userAgent = 'spiker-install'
 $originalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
+$script:SuppressTopLevelUserMessage = $false
 
 function Write-Info {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -332,37 +333,40 @@ function Start-RequiredPowerShellHost {
     $scriptPath = New-InstallerScriptFile
     $powerShell = Get-WindowsPowerShellPath
 
-    try {
-        $startArguments = @{
-            FilePath = $powerShell
-            ArgumentList = @(
+    $startArguments = @{
+        FilePath = $powerShell
+        ArgumentList = @(
             '-NoProfile',
             '-ExecutionPolicy',
             'Bypass',
             '-File',
             "`"$scriptPath`"",
             '-RelaunchedForRequiredHost'
-            )
-            WindowStyle = 'Normal'
-            PassThru = $true
-            Wait = $true
-        }
-        if ($needsAdministrator) {
-            $startArguments.Verb = 'RunAs'
-        }
+        )
+        WindowStyle = 'Normal'
+        PassThru = $true
+        Wait = $true
+    }
+    if ($needsAdministrator) {
+        $startArguments.Verb = 'RunAs'
+    }
 
+    try {
         $process = Start-Process @startArguments
-        $exitCode = if ($null -ne $process.ExitCode) { [int]$process.ExitCode } else { 0 }
-        if (@(0, 3010) -notcontains $exitCode) {
-            throw "Yönetici PowerShell işlemi $exitCode çıkış koduyla sonlandı."
-        }
     }
     catch {
-        Show-UserMessage -Message "Spiker kurulumu gerekli PowerShell oturumunda başlatılamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
+        $script:SuppressTopLevelUserMessage = $true
+        Show-UserMessage -Message "Yönetici izni alınamadı. Spiker kurulumu başlatılamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
         throw
     }
     finally {
         Remove-TemporaryInstallerScript -Path $scriptPath
+    }
+
+    $exitCode = if ($null -ne $process.ExitCode) { [int]$process.ExitCode } else { 0 }
+    if (@(0, 3010) -notcontains $exitCode) {
+        $script:SuppressTopLevelUserMessage = $true
+        throw "Yükseltilmiş Spiker kurulum işlemi tamamlanamadı. Çıkış kodu: $exitCode"
     }
 
     return $true
@@ -518,7 +522,10 @@ try {
     }
 }
 catch {
-    Show-UserMessage -Message "Spiker kurulumu tamamlanamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
+    if (-not $script:SuppressTopLevelUserMessage) {
+        Show-UserMessage -Message "Spiker kurulumu tamamlanamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
+    }
+
     throw
 }
 finally {
