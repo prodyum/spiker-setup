@@ -277,6 +277,25 @@ function Write-Utf8BomFile {
     [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8Bom)
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    if ($null -eq $algorithm) {
+        throw 'SHA256 crypto provider kullanılamıyor.'
+    }
+
+    $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $Path).Path)
+    try {
+        $hashBytes = $algorithm.ComputeHash($stream)
+        return -join ($hashBytes | ForEach-Object { $_.ToString('X2') })
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 function New-InstallerScriptFile {
     $tempRoot = Get-SafeTempRoot
     $scriptPath = Join-Path $tempRoot ('spiker-install-' + ([Guid]::NewGuid().ToString('N')) + '.ps1')
@@ -462,7 +481,7 @@ function Save-SetupAsset {
 
     if (-not [string]::IsNullOrWhiteSpace($Asset.Digest) -and $Asset.Digest.StartsWith('sha256:', [System.StringComparison]::OrdinalIgnoreCase)) {
         $expectedHash = $Asset.Digest.Substring('sha256:'.Length).ToUpperInvariant()
-        $actualHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToUpperInvariant()
+        $actualHash = (Get-Sha256 -Path $Destination).ToUpperInvariant()
         if ($actualHash -ne $expectedHash) {
             throw "SHA256 doğrulaması başarısız. Beklenen=$expectedHash, indirilen=$actualHash."
         }
