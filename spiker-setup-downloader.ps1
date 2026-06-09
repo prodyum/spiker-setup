@@ -1,9 +1,15 @@
-param(
+﻿param(
     [Parameter(Mandatory = $false)]
     [switch]$RelaunchedForRequiredHost,
 
     [Parameter(Mandatory = $false)]
-    [string]$DownloaderUrl = ''
+    [string]$DownloaderUrl = '',
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$SetupArguments = @(),
+
+    [Parameter(Mandatory = $false)]
+    [string]$SetupArgumentsBase64 = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +71,32 @@ function Write-Info {
     param([Parameter(Mandatory = $true)][string]$Message)
     Write-Host "[Spiker] $Message"
 }
+
+function ConvertTo-SetupArgumentsBase64 {
+    param([Parameter(Mandatory = $false)][string[]]$Arguments = @())
+
+    $payload = [pscustomobject]@{ SetupArguments = @($Arguments) }
+    $json = $payload | ConvertTo-Json -Compress
+    return [Convert]::ToBase64String($script:Utf8NoBom.GetBytes($json))
+}
+
+function ConvertFrom-SetupArgumentsBase64 {
+    param([Parameter(Mandatory = $false)][AllowEmptyString()][string]$Value = '')
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+
+    $json = $script:Utf8NoBom.GetString([Convert]::FromBase64String($Value))
+    $payload = $json | ConvertFrom-Json
+    if ($null -eq $payload -or $null -eq $payload.SetupArguments) {
+        return @()
+    }
+
+    return @($payload.SetupArguments | ForEach-Object { [string]$_ })
+}
+
+$SetupArguments = @(ConvertFrom-SetupArgumentsBase64 -Value $SetupArgumentsBase64) + @($SetupArguments)
 
 function Show-UserMessage {
     param(
@@ -608,12 +640,16 @@ function Invoke-SpikerInstallPreflight {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) {
-        return
+        return [pscustomobject]@{ DeferredRestartProcesses = @() }
     }
 
     Write-Info "Kurulum klasörü kontrol ediliyor: $Path"
     $lockingProcessIds = @(Get-LockingProcessIds -Path $Path)
-    $restartInfos = @(Get-ProcessRestartInfo -ProcessIds $lockingProcessIds)
+    $restartInfos = @()
+    if ($lockingProcessIds.Count -gt 0) {
+        $restartInfos = @(Get-ProcessRestartInfo -ProcessIds $lockingProcessIds)
+    }
+
     if ($restartInfos.Count -gt 0) {
         Stop-ProcessesForInstallCleanup -Processes $restartInfos
     }
@@ -621,9 +657,7 @@ function Invoke-SpikerInstallPreflight {
     Write-Info 'Kurulum klasörü temizleniyor. spiker.ini korunacak.'
     Clear-SpikerInstallDirectory -Path $Path
 
-    if ($restartInfos.Count -gt 0) {
-        Restart-ProcessesForInstallCleanup -Processes $restartInfos
-    }
+    return [pscustomobject]@{ DeferredRestartProcesses = @($restartInfos) }
 }
 
 function Save-UrlFile {
@@ -759,6 +793,13 @@ function Start-RequiredPowerShellHost {
         PassThru = $true
         Wait = $true
     }
+    if ($SetupArguments.Count -gt 0) {
+        $startArguments.ArgumentList += @(
+            '-SetupArgumentsBase64',
+            (ConvertTo-SetupArgumentsBase64 -Arguments $SetupArguments)
+        )
+    }
+
     if ($needsAdministrator) {
         $startArguments.Verb = 'RunAs'
     }
@@ -913,7 +954,7 @@ try {
     }
 
     Write-Info 'Windows PowerShell 5.1 ve yönetici izni doğrulandı.'
-    Invoke-SpikerInstallPreflight -Path $targetInstallDirectory
+    $installPreflight = Invoke-SpikerInstallPreflight -Path $targetInstallDirectory
 
     $installDirectory = Get-SafeInstallDirectory
     $setupPath = Join-Path $installDirectory $assetName
@@ -923,16 +964,22 @@ try {
     Save-SetupAsset -Asset $asset -Destination $setupPath
 
     Write-Info 'Kurulum asistanı başlatılıyor. PowerShell penceresi gizlenecek.'
-    $process = Start-Process -FilePath $setupPath -ArgumentList @(
+    $setupProcessArguments = @($SetupArguments) + @(
         '--spiker-sfx-exit-file',
         "`"$setupExitCodePath`""
-    ) -WorkingDirectory $installDirectory -WindowStyle Normal -PassThru
+    )
+    $process = Start-Process -FilePath $setupPath -ArgumentList $setupProcessArguments -WorkingDirectory $installDirectory -WindowStyle Normal -PassThru
     Hide-ConsoleWindow
     $process.WaitForExit()
 
     $exitCode = Get-SetupExitCode -Process $process -ExitCodePath $setupExitCodePath
     if (@(0, 3010) -notcontains $exitCode) {
         throw "Spiker kurulumu $exitCode çıkış koduyla sonlandı."
+    }
+
+    $deferredRestartProcesses = @($installPreflight.DeferredRestartProcesses)
+    if ($deferredRestartProcesses.Count -gt 0) {
+        Restart-ProcessesForInstallCleanup -Processes $deferredRestartProcesses
     }
 }
 catch {
