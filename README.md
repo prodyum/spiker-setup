@@ -40,7 +40,7 @@ Kurulum paketi `C:\prodyum\spiker` altına kurulur. Mevcut ayarlar korunur; gün
 
 ## Güvenlik Notu
 
-`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları bildirilir. Script yürütme izni bu oturum için otomatik olarak güvenli şekilde ayarlanmaya çalışılır; kalıcı kullanıcı izni gerekirse PowerShell sizden onay ister.
+`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları bildirilir. Script yürütme izni bu oturum için otomatik olarak güvenli şekilde ayarlanmaya çalışılır; bu işlem başarısız olursa script zaten çalıştığı oturumda kalıcı kullanıcı izni istemeden devam eder.
 
 ## Yayın Akışı
 

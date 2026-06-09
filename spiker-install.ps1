@@ -42,16 +42,8 @@ function Enable-ProcessScriptExecution {
     }
     catch {
         Write-Warning "PowerShell script yürütme izni bu oturum için otomatik ayarlanamadı: $($_.Exception.Message)"
+        Write-Warning 'Kurulum scripti bu oturumda zaten çalıştığı için devam ediliyor.'
     }
-
-    $prompt = 'PowerShell script çalıştırma izni bu kullanıcı için RemoteSigned yapılsın mı? (E/H)'
-    $answer = if ([Environment]::UserInteractive) { Read-Host $prompt } else { 'H' }
-    if ($answer -match '^(e|E|evet|EVET|y|Y|yes|YES)$') {
-        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop
-        return
-    }
-
-    throw 'PowerShell script yürütme izni verilmediği için Spiker kurulumu başlatılamadı.'
 }
 
 function Test-Administrator {
