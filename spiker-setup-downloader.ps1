@@ -54,7 +54,6 @@ Set-SpikerUtf8Console
 
 $repository = 'hasan-ozdemir/spiker-packages'
 $assetName = 'spiker-setup.exe'
-$targetInstallDirectory = 'C:\prodyum\spiker'
 $installerScriptUrl = if ([string]::IsNullOrWhiteSpace($DownloaderUrl)) {
     'https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-setup-downloader.ps1'
 }
@@ -226,10 +225,7 @@ function Get-SafeInstallDirectory {
         throw "Güvenli olmayan temp yolu: $installDirectory"
     }
 
-    if (Test-Path -LiteralPath $installDirectory) {
-        Remove-SafeInstallDirectory -Path $installDirectory
-    }
-
+    Refresh-SafeInstallDirectory -Path $installDirectory
     New-Item -Path $installDirectory -ItemType Directory -Force | Out-Null
     return [System.IO.Path]::GetFullPath($installDirectory)
 }
@@ -246,6 +242,22 @@ function Remove-SafeInstallDirectory {
     }
 
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+}
+
+function Clear-SafeInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    if (-not (Test-SafeInstallDirectory -Path $Path)) {
+        throw "Güvenli olmayan temp içerik temizlik yolu: $Path"
+    }
+
+    foreach ($item in Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue) {
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+    }
 }
 
 function Test-TemporaryInstallerScript {
@@ -434,7 +446,7 @@ namespace SpikerInstaller
 '@
 }
 
-function Get-SpikerInstallResources {
+function Get-DirectoryFileResources {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -452,7 +464,7 @@ function Get-SpikerInstallResources {
 function Get-LockingProcessIds {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $resources = @(Get-SpikerInstallResources -Path $Path)
+    $resources = @(Get-DirectoryFileResources -Path $Path)
     if ($resources.Count -eq 0) {
         return @()
     }
@@ -461,7 +473,7 @@ function Get-LockingProcessIds {
     return @([SpikerInstaller.RestartManager]::GetLockingProcessIds($resources))
 }
 
-function Get-ProcessRestartInfo {
+function Get-ProcessStopInfo {
     param([Parameter(Mandatory = $true)][object[]]$ProcessIds)
 
     $currentProcessId = [System.Diagnostics.Process]::GetCurrentProcess().Id
@@ -480,7 +492,7 @@ function Get-ProcessRestartInfo {
         $commandLine = [string]$processInfo.CommandLine
         $executablePath = [string]$processInfo.ExecutablePath
         if ([string]::IsNullOrWhiteSpace($commandLine) -and [string]::IsNullOrWhiteSpace($executablePath)) {
-            throw "Process yeniden başlatma bilgisi alınamadı. PID=$processId"
+            throw "Process durdurma bilgisi alınamadı. PID=$processId"
         }
 
         $infos += [pscustomobject]@{
@@ -494,170 +506,134 @@ function Get-ProcessRestartInfo {
     return @($infos)
 }
 
-function Split-ProcessCommandLine {
-    param(
-        [Parameter(Mandatory = $false)][string]$ExecutablePath,
-        [Parameter(Mandatory = $false)][string]$CommandLine
-    )
-
-    $command = if ([string]::IsNullOrWhiteSpace($CommandLine)) { '' } else { $CommandLine.Trim() }
-    if ([string]::IsNullOrWhiteSpace($command)) {
-        if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
-            throw 'Process komut satırı boş.'
-        }
-
-        return [pscustomobject]@{ FileName = $ExecutablePath; Arguments = '' }
-    }
-
-    $parsedFile = ''
-    $parsedArguments = ''
-    if ($command.StartsWith('"')) {
-        $endQuote = $command.IndexOf('"', 1)
-        if ($endQuote -lt 0) {
-            throw "Process komut satırı ayrıştırılamadı: $command"
-        }
-
-        $parsedFile = $command.Substring(1, $endQuote - 1)
-        $parsedArguments = $command.Substring($endQuote + 1).TrimStart()
-    }
-    else {
-        $space = $command.IndexOf(' ')
-        if ($space -lt 0) {
-            $parsedFile = $command
-            $parsedArguments = ''
-        }
-        else {
-            $parsedFile = $command.Substring(0, $space)
-            $parsedArguments = $command.Substring($space + 1).TrimStart()
-        }
-    }
-
-    $fileName = if (-not [string]::IsNullOrWhiteSpace($ExecutablePath)) { $ExecutablePath } else { $parsedFile }
-    if (-not [string]::IsNullOrWhiteSpace($ExecutablePath)) {
-        $sameExecutable =
-            [string]::Equals($parsedFile, $ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals([System.IO.Path]::GetFileName($parsedFile), [System.IO.Path]::GetFileName($ExecutablePath), [System.StringComparison]::OrdinalIgnoreCase)
-        if (-not $sameExecutable) {
-            $parsedArguments = $command
-        }
-    }
-
-    return [pscustomobject]@{ FileName = $fileName; Arguments = $parsedArguments }
-}
-
-function Stop-ProcessesForInstallCleanup {
+function Stop-ProcessesForSetupTempRefresh {
     param([Parameter(Mandatory = $true)][object[]]$Processes)
 
     foreach ($processInfo in $Processes) {
-        Write-Info ("Spiker klasörünü kullanan process durduruluyor: {0} (PID {1})" -f $processInfo.Name, $processInfo.ProcessId)
-        $process = Get-Process -Id $processInfo.ProcessId -ErrorAction SilentlyContinue
-        if ($null -eq $process) {
-            continue
-        }
+        Write-Info ("Geçici kurulum klasörünü kullanan process durduruluyor: {0} (PID {1})" -f $processInfo.Name, $processInfo.ProcessId)
+        $processIdsToStop = @(Get-DescendantProcessIds -ProcessId $processInfo.ProcessId) + @([int]$processInfo.ProcessId)
+        foreach ($processIdToStop in @($processIdsToStop | Select-Object -Unique)) {
+            $process = Get-Process -Id $processIdToStop -ErrorAction SilentlyContinue
+            if ($null -eq $process) {
+                continue
+            }
 
-        try {
-            if ($process.MainWindowHandle -ne 0) {
-                $null = $process.CloseMainWindow()
-                if ($process.WaitForExit(10000)) {
-                    continue
+            try {
+                if ($process.MainWindowHandle -ne 0) {
+                    $null = $process.CloseMainWindow()
+                    if ($process.WaitForExit(10000)) {
+                        continue
+                    }
                 }
             }
-        }
-        catch {
+            catch {
+            }
+
+            Stop-Process -Id $processIdToStop -Force -ErrorAction SilentlyContinue
+            try {
+                $process.WaitForExit(10000) | Out-Null
+            }
+            catch {
+            }
         }
 
-        Stop-Process -Id $processInfo.ProcessId -Force -ErrorAction SilentlyContinue
-        try {
-            $process.WaitForExit(10000) | Out-Null
-        }
-        catch {
-        }
+        Start-Sleep -Milliseconds 500
     }
 }
 
-function Restart-ProcessesForInstallCleanup {
-    param([Parameter(Mandatory = $true)][object[]]$Processes)
+function Get-DescendantProcessIds {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
 
-    foreach ($processInfo in $Processes) {
-        $command = Split-ProcessCommandLine -ExecutablePath $processInfo.ExecutablePath -CommandLine $processInfo.CommandLine
-        if ([string]::IsNullOrWhiteSpace($command.FileName)) {
-            throw "Process yeniden başlatılamadı; çalıştırılabilir dosya yolu yok. PID=$($processInfo.ProcessId)"
+    $result = New-Object System.Collections.Generic.List[int]
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        $childId = [int]$child.ProcessId
+        foreach ($descendantId in @(Get-DescendantProcessIds -ProcessId $childId)) {
+            $result.Add([int]$descendantId) | Out-Null
         }
 
-        Write-Info ("Process yeniden başlatılıyor: {0}" -f $processInfo.Name)
-        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = $command.FileName
-        $startInfo.Arguments = $command.Arguments
-        if (Test-Path -LiteralPath $command.FileName -PathType Leaf) {
-            $startInfo.WorkingDirectory = Split-Path -Parent $command.FileName
-        }
-
-        $startInfo.UseShellExecute = $false
-        $started = [System.Diagnostics.Process]::Start($startInfo)
-        if ($null -eq $started) {
-            throw "Process yeniden başlatılamadı: $($processInfo.Name)"
-        }
+        $result.Add($childId) | Out-Null
     }
+
+    return @($result)
 }
 
-function Clear-SpikerInstallDirectory {
+function Get-SetupTempProcessIds {
     param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $ids = New-Object System.Collections.Generic.HashSet[int]
+    $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $name = [string]$_.Name
+            $executablePath = [string]$_.ExecutablePath
+            $commandLine = [string]$_.CommandLine
+            $isSetupProcess = $name.StartsWith('spiker-setup', [System.StringComparison]::OrdinalIgnoreCase)
+            $runsFromTemp = -not [string]::IsNullOrWhiteSpace($executablePath) -and
+                [System.IO.Path]::GetFullPath($executablePath).StartsWith($fullPath, [System.StringComparison]::OrdinalIgnoreCase)
+            $mentionsTemp = -not [string]::IsNullOrWhiteSpace($commandLine) -and
+                $commandLine.IndexOf($fullPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            $isSetupProcess -and ($runsFromTemp -or $mentionsTemp)
+        }
+
+    foreach ($processInfo in @($processes)) {
+        if ($null -ne $processInfo.ProcessId) {
+            $ids.Add([int]$processInfo.ProcessId) | Out-Null
+        }
+    }
+
+    return @($ids)
+}
+
+function Stop-SetupTempProcesses {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $processIds = New-Object System.Collections.Generic.HashSet[int]
+    foreach ($processId in @(Get-LockingProcessIds -Path $Path)) {
+        $processIds.Add([int]$processId) | Out-Null
+    }
+
+    foreach ($processId in @(Get-SetupTempProcessIds -Path $Path)) {
+        $processIds.Add([int]$processId) | Out-Null
+    }
+
+    if ($processIds.Count -eq 0) {
+        return
+    }
+
+    $processInfos = @(Get-ProcessStopInfo -ProcessIds @($processIds))
+    if ($processInfos.Count -gt 0) {
+        Stop-ProcessesForSetupTempRefresh -Processes $processInfos
+    }
+}
+
+function Refresh-SafeInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-SafeInstallDirectory -Path $Path)) {
+        throw "Güvenli olmayan temp yenileme yolu: $Path"
+    }
 
     if (-not (Test-Path -LiteralPath $Path)) {
         return
     }
 
-    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
-    if (-not [string]::Equals($fullPath, 'C:\prodyum\spiker', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Güvenli olmayan kurulum temizlik yolu: $Path"
-    }
-
-    $backupPath = $null
-    $iniPath = Join-Path $Path 'spiker.ini'
-    if (Test-Path -LiteralPath $iniPath -PathType Leaf) {
-        $backupPath = Join-Path (Get-SafeTempRoot) ('spiker-ini-backup-' + ([Guid]::NewGuid().ToString('N')) + '.ini')
-        Copy-Item -LiteralPath $iniPath -Destination $backupPath -Force
-    }
-
-    try {
-        foreach ($item in Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue) {
-            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+    Write-Info "Geçici kurulum klasörü yenileniyor: $Path"
+    Stop-SetupTempProcesses -Path $Path
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Clear-SafeInstallDirectory -Path $Path
+            return
         }
+        catch {
+            if ($attempt -eq 5) {
+                throw
+            }
 
-        if ($null -ne $backupPath -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
-            New-Item -Path $Path -ItemType Directory -Force | Out-Null
-            Copy-Item -LiteralPath $backupPath -Destination $iniPath -Force
+            Stop-SetupTempProcesses -Path $Path
+            Start-Sleep -Milliseconds (500 * $attempt)
         }
     }
-    finally {
-        if ($null -ne $backupPath) {
-            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-function Invoke-SpikerInstallPreflight {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return [pscustomobject]@{ DeferredRestartProcesses = @() }
-    }
-
-    Write-Info "Kurulum klasörü kontrol ediliyor: $Path"
-    $lockingProcessIds = @(Get-LockingProcessIds -Path $Path)
-    $restartInfos = @()
-    if ($lockingProcessIds.Count -gt 0) {
-        $restartInfos = @(Get-ProcessRestartInfo -ProcessIds $lockingProcessIds)
-    }
-
-    if ($restartInfos.Count -gt 0) {
-        Stop-ProcessesForInstallCleanup -Processes $restartInfos
-    }
-
-    Write-Info 'Kurulum klasörü temizleniyor. spiker.ini korunacak.'
-    Clear-SpikerInstallDirectory -Path $Path
-
-    return [pscustomobject]@{ DeferredRestartProcesses = @($restartInfos) }
 }
 
 function Save-UrlFile {
@@ -954,7 +930,6 @@ try {
     }
 
     Write-Info 'Windows PowerShell 5.1 ve yönetici izni doğrulandı.'
-    $installPreflight = Invoke-SpikerInstallPreflight -Path $targetInstallDirectory
 
     $installDirectory = Get-SafeInstallDirectory
     $setupPath = Join-Path $installDirectory $assetName
@@ -976,11 +951,6 @@ try {
     if (@(0, 3010) -notcontains $exitCode) {
         throw "Spiker kurulumu $exitCode çıkış koduyla sonlandı."
     }
-
-    $deferredRestartProcesses = @($installPreflight.DeferredRestartProcesses)
-    if ($deferredRestartProcesses.Count -gt 0) {
-        Restart-ProcessesForInstallCleanup -Processes $deferredRestartProcesses
-    }
 }
 catch {
     if (-not $script:SuppressTopLevelUserMessage) {
@@ -996,7 +966,16 @@ finally {
             Remove-SafeInstallDirectory -Path $installDirectory
         }
         catch {
-            Show-UserMessage -Message "Geçici Spiker kurulum klasörü temizlenemedi:`n$installDirectory`n`n$($_.Exception.Message)" -Icon 48
+            try {
+                Stop-SetupTempProcesses -Path $installDirectory
+                Clear-SafeInstallDirectory -Path $installDirectory
+            }
+            catch {
+                $remainingItems = @(Get-ChildItem -LiteralPath $installDirectory -Force -ErrorAction SilentlyContinue)
+                if ($remainingItems.Count -gt 0) {
+                    Show-UserMessage -Message "Geçici Spiker kurulum dosyaları temizlenemedi:`n$installDirectory`n`n$($_.Exception.Message)" -Icon 48
+                }
+            }
         }
     }
 
