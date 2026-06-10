@@ -65,6 +65,10 @@ $userAgent = 'spiker-install'
 $originalProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
 $script:SuppressTopLevelUserMessage = $false
+$script:CurrentInstallerStep = $null
+$script:InstallDirectory = ''
+$script:SetupLogPath = ''
+$script:DownloaderSucceeded = $false
 
 function Write-Info {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -95,7 +99,7 @@ function ConvertFrom-SetupArgumentsBase64 {
     return @($payload.SetupArguments | ForEach-Object { [string]$_ })
 }
 
-$SetupArguments = @(ConvertFrom-SetupArgumentsBase64 -Value $SetupArgumentsBase64) + @($SetupArguments)
+$rawSetupArguments = @($SetupArguments)
 
 function Show-UserMessage {
     param(
@@ -103,6 +107,11 @@ function Show-UserMessage {
         [Parameter(Mandatory = $false)][string]$Title = 'Spiker Kurulum',
         [Parameter(Mandatory = $false)][int]$Icon = 64
     )
+
+    if ([string]::Equals($env:SPIKER_INSTALL_NO_MESSAGE, '1', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host $Message
+        return
+    }
 
     try {
         $shell = New-Object -ComObject WScript.Shell
@@ -147,6 +156,104 @@ function Get-ExceptionMessage {
     }
 
     return ($parts -join "`n")
+}
+
+function Set-InstallerStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Step,
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$Expected,
+        [Parameter(Mandatory = $false)][string]$Detail = ''
+    )
+
+    $script:CurrentInstallerStep = [pscustomobject]@{
+        Step = $Step
+        Action = $Action
+        Expected = $Expected
+        Detail = $Detail
+    }
+}
+
+function Get-InstallerLogSummary {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($script:SetupLogPath)) {
+        $candidates.Add($script:SetupLogPath) | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:InstallDirectory)) {
+        $candidates.Add((Join-Path $script:InstallDirectory 'spiker-setup-silent.log')) | Out-Null
+        $candidates.Add((Join-Path $script:InstallDirectory 'spiker-downloader-error.txt')) | Out-Null
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+
+        try {
+            $lines = @(Get-Content -LiteralPath $candidate -Tail 20 -ErrorAction Stop)
+            if ($lines.Count -eq 0) {
+                continue
+            }
+
+            return "Log özeti: $candidate`n" + ($lines -join "`n")
+        }
+        catch {
+        }
+    }
+
+    return ''
+}
+
+function Format-InstallerFailure {
+    param([Parameter(Mandatory = $true)][System.Exception]$Exception)
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add('Spiker kurulumu tamamlanamadı.') | Out-Null
+    if ($null -ne $script:CurrentInstallerStep) {
+        $parts.Add('') | Out-Null
+        $parts.Add("Adım: $($script:CurrentInstallerStep.Step)") | Out-Null
+        $parts.Add("İşlem: $($script:CurrentInstallerStep.Action)") | Out-Null
+        $parts.Add("Beklenen: $($script:CurrentInstallerStep.Expected)") | Out-Null
+        if (-not [string]::IsNullOrWhiteSpace([string]$script:CurrentInstallerStep.Detail)) {
+            $parts.Add("Ayrıntı: $($script:CurrentInstallerStep.Detail)") | Out-Null
+        }
+    }
+
+    $parts.Add('') | Out-Null
+    $parts.Add('Karşılaşılan durum:') | Out-Null
+    $parts.Add((Get-ExceptionMessage -Exception $Exception)) | Out-Null
+
+    if (-not [string]::IsNullOrWhiteSpace($script:InstallDirectory)) {
+        $parts.Add('') | Out-Null
+        $parts.Add("Geçici kurulum klasörü: $script:InstallDirectory") | Out-Null
+    }
+
+    $logSummary = Get-InstallerLogSummary
+    if (-not [string]::IsNullOrWhiteSpace($logSummary)) {
+        $parts.Add('') | Out-Null
+        $parts.Add($logSummary) | Out-Null
+    }
+
+    return ($parts -join "`n")
+}
+
+function Save-InstallerFailure {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($script:InstallDirectory)) {
+        return
+    }
+
+    try {
+        New-Item -Path $script:InstallDirectory -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText(
+            (Join-Path $script:InstallDirectory 'spiker-downloader-error.txt'),
+            $Message,
+            $script:Utf8Bom)
+    }
+    catch {
+    }
 }
 
 function Initialize-Network {
@@ -196,7 +303,14 @@ function Test-Administrator {
 }
 
 function Get-SafeTempRoot {
-    $tempRoot = [System.IO.Path]::GetTempPath()
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $tempRoot = if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+        Join-Path $localAppData 'Temp'
+    }
+    else {
+        [System.IO.Path]::GetTempPath()
+    }
+
     if ([string]::IsNullOrWhiteSpace($tempRoot)) {
         throw 'Temp klasörü bulunamadı.'
     }
@@ -245,7 +359,10 @@ function Remove-SafeInstallDirectory {
 }
 
 function Clear-SafeInstallDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $false)][switch]$PreserveCurrentScript
+    )
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
         return
@@ -255,7 +372,22 @@ function Clear-SafeInstallDirectory {
         throw "Güvenli olmayan temp içerik temizlik yolu: $Path"
     }
 
+    $currentScriptPath = ''
+    if ($PreserveCurrentScript.IsPresent -and -not [string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        try {
+            $currentScriptPath = [System.IO.Path]::GetFullPath($PSCommandPath)
+        }
+        catch {
+            $currentScriptPath = ''
+        }
+    }
+
     foreach ($item in Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue) {
+        if (-not [string]::IsNullOrWhiteSpace($currentScriptPath) -and
+            [string]::Equals([System.IO.Path]::GetFullPath($item.FullName), $currentScriptPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
         Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
     }
 }
@@ -274,7 +406,8 @@ function Test-TemporaryInstallerScript {
     }
 
     $fileName = [System.IO.Path]::GetFileName($pathFull)
-    return ($fileName.StartsWith('spiker-install-', [System.StringComparison]::OrdinalIgnoreCase) -or
+    return ($fileName.Equals('spiker-setup-downloader.ps1', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $fileName.StartsWith('spiker-install-', [System.StringComparison]::OrdinalIgnoreCase) -or
         $fileName.StartsWith('spiker-setup-downloader-', [System.StringComparison]::OrdinalIgnoreCase)) -and
         $fileName.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)
 }
@@ -622,7 +755,7 @@ function Refresh-SafeInstallDirectory {
     Stop-SetupTempProcesses -Path $Path
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         try {
-            Clear-SafeInstallDirectory -Path $Path
+            Clear-SafeInstallDirectory -Path $Path -PreserveCurrentScript
             return
         }
         catch {
@@ -700,8 +833,10 @@ function Get-Sha256 {
 }
 
 function New-InstallerScriptFile {
-    $tempRoot = Get-SafeTempRoot
-    $scriptPath = Join-Path $tempRoot ('spiker-setup-downloader-' + ([Guid]::NewGuid().ToString('N')) + '.ps1')
+    $installDirectory = Get-SafeInstallDirectory
+    $script:InstallDirectory = $installDirectory
+    $script:SetupLogPath = Join-Path $installDirectory 'spiker-setup-silent.log'
+    $scriptPath = Join-Path $installDirectory 'spiker-setup-downloader.ps1'
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
         $content = [System.IO.File]::ReadAllText($PSCommandPath, [System.Text.Encoding]::UTF8)
         Write-Utf8BomFile -Path $scriptPath -Content $content
@@ -924,20 +1059,57 @@ function Get-SetupExitCode {
 
 $installDirectory = $null
 try {
+    Set-InstallerStep `
+        -Step 'Kurulum argümanlarını okuma' `
+        -Action 'Wrapper veya relaunch sürecinden gelen kurulum argümanları çözümleniyor.' `
+        -Expected 'Base64 argüman paketi geçerli JSON içermeli veya boş olmalı.'
+    $SetupArguments = @(ConvertFrom-SetupArgumentsBase64 -Value $SetupArgumentsBase64) + @($rawSetupArguments)
+
+    Set-InstallerStep `
+        -Step 'Ağ hazırlığı' `
+        -Action 'GitHub API ve indirme bağlantıları için TLS/proxy ayarları hazırlanıyor.' `
+        -Expected 'GitHub release bilgisi ve kurulum paketi HTTPS üzerinden erişilebilir olmalı.'
     Initialize-Network
+
+    Set-InstallerStep `
+        -Step 'PowerShell ve yönetici izni doğrulaması' `
+        -Action 'Windows PowerShell 5.1 ve yönetici hakları kontrol ediliyor; gerekirse script yeniden başlatılıyor.' `
+        -Expected 'Kurulum Windows PowerShell 5.1 altında ve yönetici yetkisiyle devam etmeli.'
     if (Start-RequiredPowerShellHost) {
+        $script:DownloaderSucceeded = $true
         return
     }
 
     Write-Info 'Windows PowerShell 5.1 ve yönetici izni doğrulandı.'
 
+    Set-InstallerStep `
+        -Step 'Geçici kurulum klasörü yenileme' `
+        -Action 'Deterministic temp klasörü hazırlanıyor; klasörü kilitleyen eski processler kapatılıyor.' `
+        -Expected '%LOCALAPPDATA%\Temp\spiker-setup temizlenebilmeli ve yeniden yazılabilir olmalı.'
     $installDirectory = Get-SafeInstallDirectory
+    $script:InstallDirectory = $installDirectory
     $setupPath = Join-Path $installDirectory $assetName
     $setupExitCodePath = Join-Path $installDirectory 'spiker-setup-exit-code.txt'
+    $script:SetupLogPath = Join-Path $installDirectory 'spiker-setup-silent.log'
+
+    Set-InstallerStep `
+        -Step 'GitHub release bilgisi alma' `
+        -Action 'hasan-ozdemir/spiker-packages latest release bilgisi okunuyor.' `
+        -Expected "Latest release içinde indirilebilir $assetName asset'i bulunmalı."
     $asset = Get-LatestSetupAsset
 
+    Set-InstallerStep `
+        -Step 'Kurulum paketini indirme' `
+        -Action "$assetName indiriliyor ve boyut/hash doğrulaması yapılıyor." `
+        -Expected 'Dosya eksiksiz inmeli; GitHub digest bilgisi varsa SHA256 doğrulaması geçmeli.' `
+        -Detail "Hedef dosya: $setupPath"
     Save-SetupAsset -Asset $asset -Destination $setupPath
 
+    Set-InstallerStep `
+        -Step 'Kurulum asistanını başlatma' `
+        -Action "$assetName process olarak başlatılıyor." `
+        -Expected 'Spiker kurulum asistanı açılmalı ve process başarıyla başlamalı.' `
+        -Detail "Çalışma klasörü: $installDirectory"
     Write-Info 'Kurulum asistanı başlatılıyor. PowerShell penceresi gizlenecek.'
     $setupProcessArguments = @($SetupArguments) + @(
         '--spiker-sfx-exit-file',
@@ -945,41 +1117,62 @@ try {
     )
     $process = Start-Process -FilePath $setupPath -ArgumentList $setupProcessArguments -WorkingDirectory $installDirectory -WindowStyle Normal -PassThru
     Hide-ConsoleWindow
+
+    Set-InstallerStep `
+        -Step 'Kurulum asistanının sonucunu bekleme' `
+        -Action 'Spiker kurulum asistanı processinin kapanması bekleniyor.' `
+        -Expected 'Kurulum asistanı 0 veya 3010 çıkış koduyla sonuçlanmalı.' `
+        -Detail "ProcessId: $($process.Id)"
     $process.WaitForExit()
 
+    Set-InstallerStep `
+        -Step 'Kurulum sonucunu okuma' `
+        -Action 'Kurulum asistanının process çıkış kodu ve SFX exit-code dosyası okunuyor.' `
+        -Expected 'Çıkış kodu 0 veya 3010 olmalı; diğer kodlar gerçek kurulum hatası kabul edilir.' `
+        -Detail "Exit-code dosyası: $setupExitCodePath"
     $exitCode = Get-SetupExitCode -Process $process -ExitCodePath $setupExitCodePath
     if (@(0, 3010) -notcontains $exitCode) {
         throw "Spiker kurulumu $exitCode çıkış koduyla sonlandı."
     }
+
+    $script:DownloaderSucceeded = $true
 }
 catch {
+    $failureMessage = Format-InstallerFailure -Exception $_.Exception
+    Save-InstallerFailure -Message $failureMessage
+
     if (-not $script:SuppressTopLevelUserMessage) {
-        Show-UserMessage -Message "Spiker kurulumu tamamlanamadı.`n`n$(Get-ExceptionMessage -Exception $_.Exception)" -Icon 16
+        Show-UserMessage -Message $failureMessage -Icon 16
     }
 
-    throw
+    throw $failureMessage
 }
 finally {
     $ProgressPreference = $originalProgressPreference
     if ($null -ne $installDirectory) {
-        try {
-            Remove-SafeInstallDirectory -Path $installDirectory
-        }
-        catch {
+        if ($script:DownloaderSucceeded) {
             try {
-                Stop-SetupTempProcesses -Path $installDirectory
-                Clear-SafeInstallDirectory -Path $installDirectory
+                Remove-SafeInstallDirectory -Path $installDirectory
             }
             catch {
-                $remainingItems = @(Get-ChildItem -LiteralPath $installDirectory -Force -ErrorAction SilentlyContinue)
-                if ($remainingItems.Count -gt 0) {
-                    Show-UserMessage -Message "Geçici Spiker kurulum dosyaları temizlenemedi:`n$installDirectory`n`n$($_.Exception.Message)" -Icon 48
+                try {
+                    Stop-SetupTempProcesses -Path $installDirectory
+                    Clear-SafeInstallDirectory -Path $installDirectory
+                }
+                catch {
+                    $remainingItems = @(Get-ChildItem -LiteralPath $installDirectory -Force -ErrorAction SilentlyContinue)
+                    if ($remainingItems.Count -gt 0) {
+                        Show-UserMessage -Message "Geçici Spiker kurulum dosyaları temizlenemedi:`n$installDirectory`n`n$($_.Exception.Message)" -Icon 48
+                    }
                 }
             }
         }
+        else {
+            Write-Info "Kurulum tanılama dosyaları inceleme için bırakıldı: $installDirectory"
+        }
     }
 
-    if ($PSCommandPath) {
+    if ($script:DownloaderSucceeded -and $PSCommandPath) {
         Remove-TemporaryInstallerScript -Path $PSCommandPath
     }
 }

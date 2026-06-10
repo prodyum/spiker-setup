@@ -16,9 +16,9 @@ En kolay yöntem:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-packages/main/spiker-install.ps1 | iex"
 ```
 
-Bu komut, bu repodaki küçük `spiker-install.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası Windows geçici klasöründeki `spiker-setup` klasörüne indirilir.
+Bu komut, bu repodaki küçük `spiker-install.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası `%LOCALAPPDATA%\Temp\spiker-setup` klasörüne indirilir.
 
-Kurulum paketi arada 7-Zip penceresi göstermeden sessizce açılır ve Spiker kurulum asistanı başlar. Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum asistanı kapandığında geçici `spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
+Kurulum paketi arada 7-Zip penceresi göstermeden sessizce açılır ve Spiker kurulum asistanı başlar. Kurulum asistanı açıldığında PowerShell penceresi otomatik gizlenir. Kurulum başarıyla tamamlandığında geçici `%LOCALAPPDATA%\Temp\spiker-setup` klasörü içindeki dosyalarla birlikte silinir.
 
 ## Elle İndirme
 
@@ -40,7 +40,7 @@ Kurulum paketi `C:\prodyum\spiker` altına kurulur. Mevcut ayarlar korunur; gün
 
 ## Güvenlik Notu
 
-`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları bildirilir. İndirme tamamlanana kadar geçici `.download` dosyası kullanılır; kurulum asistanı kapandıktan sonra geçici kurulum dosyaları silinir.
+`spiker-install.ps1` yalnızca bu repodaki en son release içindeki `spiker-setup.exe` dosyasını indirir. İndirme HTTPS üzerinden yapılır; GitHub release asset digest bilgisi varsa SHA256 doğrulaması da yapılır. Script, sıkıştırılmış dış paketin değil gerçek Spiker kurulum asistanının çıkış sonucunu kontrol eder; kullanıcı isteğiyle kapatma normal kabul edilir, gerçek kurulum hataları hangi adımda ne beklenirken ne olduğu bilgisiyle bildirilir. İndirme tamamlanana kadar geçici `.download` dosyası kullanılır; başarılı kurulumdan sonra geçici kurulum dosyaları silinir, başarısız kurulumda `%LOCALAPPDATA%\Temp\spiker-setup` klasörü tanılama için bırakılır.
 
 ## Yayın Akışı
 
