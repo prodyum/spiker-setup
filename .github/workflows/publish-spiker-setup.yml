@@ -48,7 +48,7 @@ jobs:
     env:
       SOURCE_REPOSITORY: ${{ github.event_name == 'workflow_dispatch' && inputs.source_repository || github.event.client_payload.source_repository }}
       SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || github.event.client_payload.source_run_id }}
-      SOURCE_RUN_URL: ${{ github.event_name == 'workflow_dispatch' && format('https://github.com/{0}/actions/runs/{1}', inputs.source_repository, inputs.source_run_id) || github.event.client_payload.source_run_url }}
+      SOURCE_RUN_URL: ${{ github.event_name == 'workflow_dispatch' && format('https://github.com/{0}/actions/runs/{1}', inputs.source_repository, inputs.source_run_id) || format('https://github.com/{0}/actions/runs/{1}', github.event.client_payload.source_repository, github.event.client_payload.source_run_id) }}
       SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && 'manual' || github.event.client_payload.source_ref }}
       SOURCE_EVENT: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || github.event.client_payload.source_event }}
       SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && '' || github.event.client_payload.source_sha }}
