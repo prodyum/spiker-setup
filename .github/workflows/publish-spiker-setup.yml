@@ -9,7 +9,7 @@ on:
       source_repository:
         description: "Private source repository that owns the setup artifact run."
         required: true
-        default: "hasan-ozdemir/spiker"
+        default: "prodyum/spiker"
       source_run_id:
         description: "GitHub Actions run id that uploaded the setup artifact."
         required: true

@@ -52,11 +52,11 @@ function Set-SpikerUtf8Console {
 
 Set-SpikerUtf8Console
 
-$repository = 'hasan-ozdemir/spiker-setup'
+$repository = 'prodyum/spiker-setup'
 $assetName = 'spiker-setup.exe'
 $latestSetupAssetUrl = "https://github.com/$repository/releases/download/latest/$assetName"
 $installerScriptUrl = if ([string]::IsNullOrWhiteSpace($DownloaderUrl)) {
-    'https://raw.githubusercontent.com/hasan-ozdemir/spiker-setup/main/spiker-setup-downloader.ps1'
+    'https://raw.githubusercontent.com/prodyum/spiker-setup/main/spiker-setup-downloader.ps1'
 }
 else {
     $DownloaderUrl
@@ -1081,7 +1081,7 @@ try {
 
     Set-InstallerStep `
         -Step 'GitHub latest kurulum adresini hazırlama' `
-        -Action "hasan-ozdemir/spiker-setup latest kurulum paketi adresi hazırlanıyor." `
+        -Action "prodyum/spiker-setup latest kurulum paketi adresi hazırlanıyor." `
         -Expected "Sabit latest adresinden indirilebilir $assetName asset'i bulunmalı."
     $asset = Get-LatestSetupAsset
 

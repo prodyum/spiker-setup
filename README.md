@@ -13,7 +13,7 @@ En kolay yöntem:
 3. Enter'a basın ve açılan Spiker kurulum penceresini takip edin.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/hasan-ozdemir/spiker-setup/main/spiker-setup.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/prodyum/spiker-setup/main/spiker-setup.ps1 | iex"
 ```
 
 Bu komut, bu repodaki küçük `spiker-setup.ps1` wrapper scriptini indirip çalıştırır. Wrapper, GitHub API üzerinden `main` dalının son commit SHA'sını alır ve gerçek kurulum iş akışını o committeki `spiker-setup-downloader.ps1` dosyasına devreder. Script Windows PowerShell 5.1 ve yönetici izni gerektirir; gerekirse kendini bu oturumda yeniden başlatır ve Windows izin penceresini açar. İzin verdikten sonra en son yayınlanan sıkıştırılmış `spiker-setup.exe` dosyası `%LOCALAPPDATA%\Temp\spiker-setup` klasörüne indirilir.
@@ -30,7 +30,7 @@ Komut kullanmak istemezseniz:
 
 Güncel release:
 
-https://github.com/hasan-ozdemir/spiker-setup/releases/download/latest/spiker-setup.exe
+https://github.com/prodyum/spiker-setup/releases/download/latest/spiker-setup.exe
 
 ## Kurulumdan Sonra
 
@@ -44,4 +44,4 @@ Kurulum paketi `C:\prodyum\spiker` altına kurulur. Mevcut ayarlar korunur; gün
 
 ## Yayın Akışı
 
-Özel `hasan-ozdemir/spiker` reposunda `main` dalına yapılan her push yeni `spiker-setup.exe` paketini üretir. Bu public repo son kurulumu `latest` release alias'ı altında yayınlar. Eski version release'ler normalde temizlenir; `release-pins.json` içinde pinlenen release tag'leri korunur.
+Özel `prodyum/spiker` reposunda `main` dalına yapılan her push yeni `spiker-setup.exe` paketini üretir. Bu public repo son kurulumu `latest` release alias'ı altında yayınlar. Eski version release'ler normalde temizlenir; `release-pins.json` içinde pinlenen release tag'leri korunur.

@@ -3,7 +3,7 @@ param(
     [string]$ReleaseTag,
 
     [Parameter(Mandatory = $false)]
-    [string]$Repository = 'hasan-ozdemir/spiker-setup',
+    [string]$Repository = 'prodyum/spiker-setup',
 
     [Parameter(Mandatory = $false)]
     [switch]$NoPush

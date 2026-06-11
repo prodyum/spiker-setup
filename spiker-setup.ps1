@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$repository = 'hasan-ozdemir/spiker-setup'
+$repository = 'prodyum/spiker-setup'
 $userAgent = 'spiker-setup'
 $headers = @{
     Accept = 'application/vnd.github+json'
