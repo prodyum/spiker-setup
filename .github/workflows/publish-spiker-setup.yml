@@ -17,6 +17,10 @@ on:
         description: "Artifact name uploaded by the source workflow."
         required: true
         default: "spiker-setup"
+      artifact_sha256:
+        description: "Expected SHA256 of spiker-setup.exe from the source workflow."
+        required: false
+        default: ""
       release_tag:
         description: "Release tag to create or update."
         required: true
@@ -49,6 +53,7 @@ jobs:
       SOURCE_EVENT: ${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch' || github.event.client_payload.source_event }}
       SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && '' || github.event.client_payload.source_sha }}
       ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || github.event.client_payload.artifact_name }}
+      EXPECTED_ARTIFACT_SHA256: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_sha256 || github.event.client_payload.artifact_sha256 }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.client_payload.release_tag }}
       RELEASE_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_title || github.event.client_payload.release_title }}
       PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || github.event.client_payload.prerelease }}
@@ -69,6 +74,10 @@ jobs:
           done
           if [[ "$RELEASE_TAG" =~ [\\/\[\]\^\ \*\`~:\?\<\>\|] ]]; then
             echo "::error::Invalid release tag: $RELEASE_TAG"
+            exit 2
+          fi
+          if [[ -n "${EXPECTED_ARTIFACT_SHA256:-}" && ! "$EXPECTED_ARTIFACT_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+            echo "::error::Invalid expected artifact SHA256: $EXPECTED_ARTIFACT_SHA256"
             exit 2
           fi
 
@@ -110,10 +119,98 @@ jobs:
           fi
 
           sha256="$(sha256sum "$asset" | awk '{print toupper($1)}')"
+          expected_sha256="${EXPECTED_ARTIFACT_SHA256^^}"
+          if [[ -n "$expected_sha256" && "$sha256" != "$expected_sha256" ]]; then
+            echo "::error::Downloaded artifact SHA256 mismatch. expected=$expected_sha256 actual=$sha256"
+            exit 6
+          fi
+
           title="$RELEASE_TITLE"
           if [[ -z "$title" ]]; then
             title="Spiker Setup $RELEASE_TAG"
           fi
+
+          configure_git_identity() {
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+          }
+
+          force_update_tag() {
+            local tag="$1"
+            git tag -f "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag" --force
+          }
+
+          delete_release_asset_if_exists() {
+            local tag="$1"
+            local asset_name="$2"
+            local asset_ids
+            mapfile -t asset_ids < <(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+              --jq ".assets[] | select(.name == \"$asset_name\") | .id" 2>/dev/null || true)
+            local asset_id
+            for asset_id in "${asset_ids[@]}"; do
+              if [[ -n "$asset_id" ]]; then
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >/dev/null
+              fi
+            done
+          }
+
+          upload_release_asset() {
+            local tag="$1"
+            local file="$2"
+            delete_release_asset_if_exists "$tag" "$(basename "$file")"
+            gh release upload "$tag" "$file" \
+              --repo "$GITHUB_REPOSITORY"
+          }
+
+          verify_release_asset_metadata() {
+            local tag="$1"
+            local expected="$2"
+            local expected_lower="${expected,,}"
+            local asset_json
+            asset_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+              --jq '.assets[] | select(.name == "spiker-setup.exe") | {digest: .digest, size: .size}')"
+            if [[ -z "$asset_json" ]]; then
+              echo "::error::spiker-setup.exe asset was not found on release tag $tag."
+              exit 7
+            fi
+
+            local actual_digest
+            actual_digest="$(jq -r '.digest // ""' <<<"$asset_json")"
+            actual_digest="${actual_digest#sha256:}"
+            actual_digest="${actual_digest,,}"
+            if [[ "$actual_digest" != "$expected_lower" ]]; then
+              echo "::error::Release asset digest mismatch for $tag. expected=$expected_lower actual=${actual_digest:-<missing>}"
+              exit 7
+            fi
+
+            local size
+            size="$(jq -r '.size // 0' <<<"$asset_json")"
+            if [[ "$size" -le 0 ]]; then
+              echo "::error::Release asset size is invalid for $tag: $size"
+              exit 7
+            fi
+
+            local url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/spiker-setup.exe"
+            if ! curl -fsSI --retry 5 --retry-delay 2 --max-time 20 "$url" >/dev/null; then
+              echo "::error::Release asset URL is not reachable: $url"
+              exit 7
+            fi
+          }
+
+          verify_tag_points_to_head() {
+            local tag="$1"
+            local actual
+            actual="$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')"
+            if [[ "$actual" != "$GITHUB_SHA" ]]; then
+              echo "::error::Release tag $tag does not point at this workflow commit. expected=$GITHUB_SHA actual=${actual:-<missing>}"
+              exit 8
+            fi
+          }
+
+          configure_git_identity
+          force_update_tag "$RELEASE_TAG"
+          force_update_tag latest
 
           notes_file="$(mktemp)"
           {
@@ -130,20 +227,20 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$title" \
               --notes-file "$notes_file"
-            gh release upload "$RELEASE_TAG" "$asset" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
+            upload_release_asset "$RELEASE_TAG" "$asset"
           else
             args=(
-              release create "$RELEASE_TAG" "$asset"
+              release create "$RELEASE_TAG"
               --repo "$GITHUB_REPOSITORY"
               --title "$title"
               --notes-file "$notes_file"
+              --target "$GITHUB_SHA"
             )
             if [[ "$PRERELEASE" == "true" ]]; then
               args+=(--prerelease)
             fi
             gh "${args[@]}"
+            upload_release_asset "$RELEASE_TAG" "$asset"
           fi
 
           latest_notes_file="$(mktemp)"
@@ -162,15 +259,20 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "Spiker Setup latest" \
               --notes-file "$latest_notes_file"
-            gh release upload latest "$asset" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
+            upload_release_asset latest "$asset"
           else
-            gh release create latest "$asset" \
+            gh release create latest \
               --repo "$GITHUB_REPOSITORY" \
               --title "Spiker Setup latest" \
-              --notes-file "$latest_notes_file"
+              --notes-file "$latest_notes_file" \
+              --target "$GITHUB_SHA"
+            upload_release_asset latest "$asset"
           fi
+
+          verify_tag_points_to_head "$RELEASE_TAG"
+          verify_tag_points_to_head latest
+          verify_release_asset_metadata "$RELEASE_TAG" "$sha256"
+          verify_release_asset_metadata latest "$sha256"
 
       - name: Cut over old releases
         if: ${{ env.SOURCE_EVENT == 'push' && env.SOURCE_REF == 'main' }}

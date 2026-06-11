@@ -69,6 +69,14 @@ exit /b 0
     Assert-True -Condition ($downloader.Contains('releases/download/latest')) -Message 'Downloader does not use the stable latest asset URL.'
     Assert-True -Condition (-not $downloader.Contains('/releases/latest')) -Message 'Downloader still uses the mutable releases/latest API endpoint.'
 
+    $workflow = Get-Content -LiteralPath (Join-Path $repoRoot '.github\workflows\publish-spiker-setup.yml') -Raw
+    Assert-True -Condition ($workflow.Contains('EXPECTED_ARTIFACT_SHA256')) -Message 'Release workflow does not validate the expected source artifact SHA256.'
+    Assert-True -Condition ($workflow.Contains('force_update_tag latest')) -Message 'Release workflow does not force-update the latest tag.'
+    Assert-True -Condition ($workflow.Contains('verify_release_asset_metadata latest "$sha256"')) -Message 'Release workflow does not verify the stable latest download asset metadata.'
+    Assert-True -Condition ($workflow.Contains('.digest')) -Message 'Release workflow does not use GitHub asset digest metadata for fast verification.'
+    Assert-True -Condition ($workflow.Contains('curl -fsSI')) -Message 'Release workflow does not use a lightweight HEAD check for canonical release URLs.'
+    Assert-True -Condition ($workflow.Contains('releases/download/$tag/spiker-setup.exe')) -Message 'Release workflow does not verify canonical release download URLs.'
+
     Write-Host 'spiker-setup release script tests passed.'
 }
 finally {
