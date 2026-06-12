@@ -34,7 +34,6 @@ try {
     Set-Content -LiteralPath $fakeGh -Encoding ASCII -Value @'
 @echo off
 if "%1"=="release" if "%2"=="list" (
-  echo v2026.6.12.200
   echo latest
   echo v2026.6.11.199
   exit /b 0
@@ -76,10 +75,13 @@ exit /b 0
     $workflow = Get-Content -LiteralPath (Join-Path $repoRoot '.github\workflows\publish-spiker-setup.yml') -Raw
     Assert-True -Condition ($workflow.Contains('EXPECTED_ARTIFACT_SHA256')) -Message 'Release workflow does not validate the expected source artifact SHA256.'
     Assert-True -Condition ($workflow.Contains('force_update_tag latest')) -Message 'Release workflow does not force-update the latest tag.'
+    Assert-True -Condition (-not $workflow.Contains('force_update_tag "$RELEASE_TAG"')) -Message 'Release workflow still force-updates a normal version tag.'
     Assert-True -Condition ($workflow.Contains('verify_release_asset_metadata latest "$sha256"')) -Message 'Release workflow does not verify the stable latest download asset metadata.'
+    Assert-True -Condition (-not $workflow.Contains('verify_release_asset_metadata "$RELEASE_TAG" "$sha256"')) -Message 'Release workflow still publishes or verifies an unpinned version release.'
     Assert-True -Condition ($workflow.Contains('.digest')) -Message 'Release workflow does not use GitHub asset digest metadata for fast verification.'
     Assert-True -Condition ($workflow.Contains('curl -fsSI')) -Message 'Release workflow does not use a lightweight HEAD check for canonical release URLs.'
     Assert-True -Condition ($workflow.Contains('releases/download/$tag/spiker-setup.exe')) -Message 'Release workflow does not verify canonical release download URLs.'
+    Assert-True -Condition ($workflow.Contains('kept latest and ${#pinned_tags[@]} pinned release(s)')) -Message 'Release workflow does not cut over to latest plus pinned releases only.'
 
     Write-Host 'spiker-setup release script tests passed.'
 }
